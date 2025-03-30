@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Health Intelligence Query Assistant</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf_viewer.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" rel="stylesheet">
+    <style>
+        .chat-container {
+            height: calc(100vh - 300px);
+            overflow-y: auto;
+        }
+        .message {
+            margin: 10px;
+            padding: 10px;
+            border-radius: 10px;
+        }
+        .user-message {
+            background-color: #007bff;
+            color: white;
+            margin-left: 20%;
+        }
+        .system-message {
+            background-color: #e9ecef;
+            margin-right: 20%;
+        }
+        .card-body {
+            height: calc(100vh - 100px);
+            overflow: hidden;
+        }
+        .tab-content {
+            height: 100%;
+        }
+        .tab-pane {
+            height: 100%;
+            display: none;
+        }
+        .tab-pane.active {
+            display: block;
+        }
+        .pdf-container {
+            height: 100%;
+            overflow-y: auto;
+            display: flex;
+            justify-content: center;
+            align-items: start;
+            padding: 10px;
+        }
+        .nav-tabs {
+            background-color: #f8f9fa;
+        }
+        .nav-tabs .nav-link {
+            font-size: 0.9em;
+            white-space: normal;
+            max-width: 200px;
+            height: auto;
+            min-height: 48px;
+            padding: 8px;
+            text-align: center;
+            word-wrap: break-word;
+        }
+
+        .output-box {
+            height: calc(100vh - 200px);
+            resize: none;
+            font-family: monospace;
+        }
+
+        .refinement-suggestions {
+            margin-top: 10px;
+            padding: 5px;
+            border-top: 1px solid #dee2e6;
+        }
+        
+        .query-history {
+            position: absolute;
+            right: 10px;
+            top: 10px;
+            z-index: 1000;
+        }
+
+        #questionInput {
+            min-height: 100px;
+            padding: 10px;
+            line-height: 1.5;
+            border-radius: 4px;
+        }
+
+        .input-group {
+            align-items: stretch;
+        }
+
+        .input-group .btn {
+            display: flex;
+            align-items: center;
+        }
+
+        #queryOutput, #sqlOutput {
+            min-height: calc(40vh - 50px);
+            padding: 10px;
+            line-height: 1.5;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container-fluid">
+        <div class="row mt-3">
+            <!-- Chat Section -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Interactive Query Assistant</h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="chatMessages" class="chat-container"></div>
+                        <div class="input-group mt-3">
+                            <textarea id="questionInput" class="form-control" 
+                                      placeholder="Ask a question..." 
+                                      rows="5" 
+                                      style="resize: none;"></textarea>
+                            <button class="btn btn-primary" onclick="askQuestion()">Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Query Outputs Section -->
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5>Query Outputs</h5>
+                    </div>
+                    <div class="card-body">
+                        <!-- Human-readable Query -->
+                        <div class="mb-3">
+                            <label for="queryOutput" class="form-label">Health Intelligence Query</label>
+                            <textarea id="queryOutput" class="form-control" rows="4"></textarea>
+                        </div>
+                        
+                        <!-- SQL Query (Read-only) -->
+                        <div class="mb-3">
+                            <label for="sqlOutput" class="form-label">SQL Query</label>
+                            <textarea id="sqlOutput" class="form-control" rows="4" readonly></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.min.js"></script>
+    <script>
+        // Initialize PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.11.338/pdf.worker.min.js';
+        
+        let currentPdfDocs = {};  // Store PDF documents for each tab
+
+        function clearSourceTabs() {
+            document.getElementById('sourceTabs').innerHTML = '';
+            document.getElementById('sourceContent').innerHTML = '';
+        }
+
+        function formatTabTitle(filename, page) {
+            // Extract filename without path and extension
+            const name = filename.split(/[\/\\]/).pop().replace('.pdf', '');
+            // Truncate to 30 chars if needed
+            const truncated = name.length > 30 ? name.substring(0, 27) + '...' : name;
+            // Ensure page number starts from 1
+            const displayPage = parseInt(page);
+            return `${truncated}\nPage ${displayPage}`;
+        }
+
+        function addSourceTab(source, index, isActive = false) {
+            const tabs = document.getElementById('sourceTabs');
+            const content = document.getElementById('sourceContent');
+            
+            // Create unique IDs for the containers
+            const tabPaneId = `source${index}`;
+            const pdfContainerId = `pdf-container-${index}`;
+            
+            // Add tab with formatted title
+            const tab = document.createElement('li');
+            tab.className = 'nav-item';
+            const tabLink = document.createElement('a');
+            tabLink.className = `nav-link ${isActive ? 'active' : ''}`;
+            tabLink.setAttribute('data-bs-toggle', 'tab');
+            tabLink.setAttribute('href', `#${tabPaneId}`);
+            tabLink.innerHTML = formatTabTitle(source.metadata.source, source.metadata.page);
+            tabLink.addEventListener('shown.bs.tab', () => {
+                loadPDF(source.metadata.source, parseInt(source.metadata.page) + 1, pdfContainerId);
+            });
+            tab.appendChild(tabLink);
+            tabs.appendChild(tab);
+            
+            // Add content container
+            const tabPane = document.createElement('div');
+            tabPane.className = `tab-pane ${isActive ? 'active' : ''}`;
+            tabPane.id = tabPaneId;
+            
+            // Add PDF header with download link
+            const pdfHeader = document.createElement('div');
+            pdfHeader.className = 'pdf-header';
+            const cleanSource = source.metadata.source.replace(/^documents[\/\\]/, '');
+            pdfHeader.innerHTML = `
+                <span>Viewing page ${parseInt(source.metadata.page) + 1}</span>
+                <a href="/pdf/${cleanSource}" target="_blank" download>
+                    <i class="fas fa-download"></i> Download Full PDF
+                </a>
+            `;
+            tabPane.appendChild(pdfHeader);
+            
+            // Add PDF container inside tab pane
+            const pdfContainer = document.createElement('div');
+            pdfContainer.className = 'pdf-container';
+            pdfContainer.id = pdfContainerId;
+            tabPane.appendChild(pdfContainer);
+            
+            content.appendChild(tabPane);
+            
+            // Load PDF if this is the active tab
+            if (isActive) {
+                loadPDF(source.metadata.source, parseInt(source.metadata.page) + 1, pdfContainerId);
+            }
+        }
+
+        async function loadPDF(source, pageNumber, containerId) {
+            const container = document.getElementById(containerId);
+            if (!container) {
+                console.error(`Container ${containerId} not found`);
+                return;
+            }
+
+            try {
+                const cleanSource = source.replace(/^documents[\/\\]/, '');
+                const url = `/pdf/${cleanSource}`;
+                
+                // Show loading state
+                container.innerHTML = '<div class="alert alert-info">Loading PDF...</div>';
+                
+                // Store or retrieve the PDF document
+                if (!currentPdfDocs[url]) {
+                    const loadingTask = pdfjsLib.getDocument(url);
+                    currentPdfDocs[url] = await loadingTask.promise;
+                }
+                
+                const pdfDoc = currentPdfDocs[url];
+                const page = await pdfDoc.getPage(pageNumber);
+                
+                // Get the container's current width
+                const containerWidth = container.offsetWidth - 40; // Account for padding
+                const viewport = page.getViewport({ scale: 1 });
+                const scale = containerWidth / viewport.width;
+                
+                // Create new viewport with calculated scale
+                const scaledViewport = page.getViewport({ scale });
+
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = scaledViewport.width;
+                canvas.height = scaledViewport.height;
+
+                container.innerHTML = '';
+                container.appendChild(canvas);
+
+                await page.render({
+                    canvasContext: context,
+                    viewport: scaledViewport
+                }).promise;
+
+            } catch (error) {
+                console.error('Error loading PDF:', error);
+                container.innerHTML = `<div class="alert alert-danger">Error loading PDF: ${error.message}</div>`;
+            }
+        }
+
+        // Add resize handler to adjust PDFs when window is resized
+        window.addEventListener('resize', debounce(() => {
+            const activeTab = document.querySelector('.tab-pane.active .pdf-container');
+            if (activeTab) {
+                const tabId = activeTab.closest('.tab-pane').id;
+                const sourceIndex = parseInt(tabId.replace('source', ''));
+                const source = currentSources[sourceIndex];
+                if (source) {
+                    loadPDF(source.metadata.source, parseInt(source.metadata.page) + 1, activeTab.id);
+                }
+            }
+        }, 250));
+
+        // Debounce function to limit resize events
+        function debounce(func, wait) {
+            let timeout;
+            return function executedFunction(...args) {
+                const later = () => {
+                    clearTimeout(timeout);
+                    func(...args);
+                };
+                clearTimeout(timeout);
+                timeout = setTimeout(later, wait);
+            };
+        }
+
+        // Store sources for resize handling
+        let currentSources = [];
+
+        // Update addMessage to store sources
+        function addMessage(message, isUser) {
+            const messagesDiv = document.getElementById('chatMessages');
+            if (!messagesDiv) {
+                console.error('Chat messages container not found');
+                return;
+            }
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user-message' : 'system-message'}`;
+            
+            // Safely set message content
+            if (typeof message === 'string') {
+                messageDiv.innerHTML = isUser ? `<p>${message}</p>` : message;
+            } else {
+                console.warn('Message was not a string:', message);
+                messageDiv.innerHTML = '<p>Error displaying message</p>';
+            }
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updateQueryOutput(text) {
+            const outputBox = document.getElementById('queryOutput');
+            if (outputBox) {
+                outputBox.value = text || '';
+            } else {
+                console.error('Query output element not found');
+            }
+        }
+
+        function copyToClipboard() {
+            const outputBox = document.getElementById('queryOutput');
+            if (outputBox) {
+                outputBox.select();
+                document.execCommand('copy');
+            }
+        }
+
+        function clearOutput() {
+            const outputBox = document.getElementById('queryOutput');
+            if (outputBox) {
+                outputBox.value = '';
+            }
+        }
+
+        let currentConversationId = null;
+
+        async function askQuestion() {
+            const textarea = document.getElementById('questionInput');
+            const queryOutput = document.getElementById('queryOutput');
+            const sqlOutput = document.getElementById('sqlOutput');
+            
+            if (!textarea || !queryOutput || !sqlOutput) {
+                console.error('Required elements not found');
+                return;
+            }
+
+            const question = textarea.value.trim();
+            if (!question) return;
+
+            // Get previous values, defaulting to empty strings if not present
+            const previousQuery = queryOutput.value || '';
+            const previousSql = sqlOutput.value || '';
+            
+            // Get the last chat message (if any)
+            const chatMessages = document.getElementById('chatMessages');
+            const lastSystemMessage = chatMessages?.querySelector('.system-message:last-child');
+            const previousChat = lastSystemMessage?.innerHTML || '';
+
+            addMessage(question, true);
+            textarea.value = '';
+
+            // Reset the textarea height
+            textarea.style.height = 'auto';
+
+            try {
+                const response = await fetch('/api/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        question,
+                        conversation_id: currentConversationId,
+                        previous_query: previousQuery,
+                        previous_sql: previousSql,
+                        previous_chat: previousChat
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.status === 'success') {
+                    currentConversationId = data.conversation_id;
+                    addMessage(data.response, false);
+                    
+                    // Update both query outputs
+                    if (data.query_text) {
+                        queryOutput.value = data.query_text;
+                    }
+                    if (data.sql_query) {
+                        sqlOutput.value = data.sql_query;
+                    }
+                    
+                    if (data.suggested_refinements) {
+                        addRefinementSuggestions(data.suggested_refinements);
+                    }
+                } else {
+                    addMessage('Error: ' + data.message, false);
+                }
+            } catch (error) {
+                addMessage('Error: ' + error.message, false);
+            }
+        }
+
+        function addRefinementSuggestions(refinements) {
+            if (!Array.isArray(refinements)) {
+                console.warn('Refinements is not an array:', refinements);
+                return;
+            }
+
+            const lastMessage = document.querySelector('#chatMessages .message:last-child');
+            if (!lastMessage) {
+                console.error('No message found to append refinements to');
+                return;
+            }
+
+            const suggestionsDiv = document.createElement('div');
+            suggestionsDiv.className = 'refinement-suggestions';
+            
+            refinements.forEach(suggestion => {
+                if (typeof suggestion === 'string') {
+                    const button = document.createElement('button');
+                    button.className = 'btn btn-sm btn-outline-primary m-1';
+                    button.textContent = suggestion;
+                    button.onclick = () => {
+                        const outputElement = document.getElementById('queryOutput');
+                        if (outputElement) {
+                            outputElement.value = suggestion;
+                        }
+                    };
+                    suggestionsDiv.appendChild(button);
+                }
+            });
+            
+            lastMessage.appendChild(suggestionsDiv);
+        }
+
+        // Add event listener when document is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            const textarea = document.getElementById('questionInput');
+            if (textarea) {
+                textarea.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter') {
+                        if (e.shiftKey) {
+                            // Don't prevent default - allow the newline
+                            return;
+                        } else {
+                            // Prevent the default newline and send the message
+                            e.preventDefault();
+                            askQuestion();
+                        }
+                    }
+                });
+            }
+        });
+    </script>
+</body>
+</html> 
